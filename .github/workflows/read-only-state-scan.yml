@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install read-only RPC tooling
-        run: python -m pip install --disable-pip-version-check requests eth-utils
+        run: python -m pip install --disable-pip-version-check requests eth-utils pycryptodome
 
       - name: Reconstruct scanner
         shell: bash
