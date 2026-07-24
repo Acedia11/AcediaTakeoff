@@ -1,0 +1,73 @@
+name: Encrypted market and oracle state scan
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install read-only RPC tooling
+        run: python -m pip install --disable-pip-version-check requests eth-abi eth-utils pycryptodome
+
+      - name: Reconstruct scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d oracle/scan.py.gz.b64 | gunzip > oracle/scan.py
+          python -m py_compile oracle/scan.py
+
+      - name: Execute scan without printing state to public logs
+        shell: bash
+        env:
+          OUT_DIR: private-output
+        run: |
+          set +e
+          mkdir -p private-output
+          python oracle/scan.py > private-output/run.log 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > private-output/exit-code.txt
+          printf 'scanner_exit_code=%s\n' "$rc"
+          exit 0
+
+      - name: Package and encrypt all state evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p encrypted-output
+          cp oracle/scan.py private-output/
+          find private-output -type f -print0 | sort -z | xargs -0 sha256sum > private-output/sha256.txt
+          tar -czf /tmp/private-output.tar.gz private-output
+          openssl rand -hex 48 > /tmp/output-passphrase.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 250000 \
+            -in /tmp/private-output.tar.gz \
+            -out encrypted-output/private-output.tar.gz.enc \
+            -pass file:/tmp/output-passphrase.txt
+          openssl pkeyutl -encrypt -pubin -inkey oracle/output-public.pem \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+            -in /tmp/output-passphrase.txt -out encrypted-output/passphrase.enc
+          sha256sum encrypted-output/* > encrypted-output/sha256.txt
+          printf 'The artifact is encrypted to oracle/output-public.pem.\n' > encrypted-output/README.txt
+
+      - name: Upload encrypted evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-market-oracle-state
+          path: encrypted-output
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
